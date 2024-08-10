@@ -1,0 +1,442 @@
+<html lang="en">
+
+<head>
+    <script type="text/javascript">
+        (function (window, document) {
+
+            // Establish the root object, `window` (`self`) in the browser, 
+            // or `this` in some virtual machines. We use `self`
+            // instead of `window` for `WebWorker` support.
+            var root = typeof self === 'object' && self.self === self && self || this;
+
+            // Create a safe reference to the handwriting object for use below.        
+            var handwriting = function (obj) {
+                if (obj instanceof handwriting) return obj;
+                if (!(this instanceof handwriting)) return new handwriting(obj);
+                this._wrapped = obj;
+            };
+
+            root.handwriting = handwriting;
+
+            handwriting.Canvas = function (cvs, lineWidth) {
+                this.canvas = cvs;
+                this.cxt = cvs.getContext("2d");
+                this.cxt.lineCap = "round";
+                this.cxt.lineJoin = "round";
+                this.lineWidth = lineWidth || 3;
+                this.width = cvs.width;
+                this.height = cvs.height;
+                this.drawing = false;
+                this.handwritingX = [];
+                this.handwritingY = [];
+                this.trace = [];
+                this.options = {};
+                this.step = [];
+                this.redo_step = [];
+                this.redo_trace = [];
+                this.allowUndo = false;
+                this.allowRedo = false;
+                cvs.addEventListener("mousedown", this.mouseDown.bind(this));
+                cvs.addEventListener("mousemove", this.mouseMove.bind(this));
+                cvs.addEventListener("mouseup", this.mouseUp.bind(this));
+                cvs.addEventListener("touchstart", this.touchStart.bind(this));
+                cvs.addEventListener("touchmove", this.touchMove.bind(this));
+                cvs.addEventListener("touchend", this.touchEnd.bind(this));
+                this.callback = undefined;
+                this.recognize = handwriting.recognize;
+            };
+
+            handwriting.Canvas.prototype.set_Undo_Redo = function (undo, redo) {
+                this.allowUndo = undo;
+                this.allowRedo = undo ? redo : false;
+                if (!this.allowUndo) {
+                    this.step = [];
+                    this.redo_step = [];
+                    this.redo_trace = [];
+                }
+            };
+
+            handwriting.Canvas.prototype.setLineWidth = function (lineWidth) {
+                this.lineWidth = lineWidth;
+            };
+
+            handwriting.Canvas.prototype.setCallBack = function (callback) {
+                this.callback = callback;
+            };
+
+            handwriting.Canvas.prototype.setOptions = function (options) {
+                this.options = options;
+            };
+
+            handwriting.Canvas.prototype.mouseDown = function (e) {
+                // new stroke
+                this.cxt.lineWidth = this.lineWidth;
+                this.cxt.strokeStyle = 'white';
+                this.handwritingX = [];
+                this.handwritingY = [];
+                this.drawing = true;
+                this.cxt.beginPath();
+                var rect = this.canvas.getBoundingClientRect();
+                var x = e.clientX - rect.left;
+                var y = e.clientY - rect.top;
+                this.cxt.moveTo(x, y);
+                this.handwritingX.push(x);
+                this.handwritingY.push(y);
+            };
+
+            handwriting.Canvas.prototype.mouseMove = function (e) {
+                if (this.drawing) {
+                    var rect = this.canvas.getBoundingClientRect();
+                    var x = e.clientX - rect.left;
+                    var y = e.clientY - rect.top;
+                    this.cxt.lineTo(x, y);
+                    this.cxt.stroke();
+                    this.handwritingX.push(x);
+                    this.handwritingY.push(y);
+                }
+            };
+
+            handwriting.Canvas.prototype.mouseUp = function () {
+                var w = [];
+                w.push(this.handwritingX);
+                w.push(this.handwritingY);
+                w.push([]);
+                this.trace.push(w);
+                this.drawing = false;
+                if (this.allowUndo) this.step.push(this.canvas.toDataURL());
+                recogniseinject()
+            };
+
+            handwriting.Canvas.prototype.touchStart = function (e) {
+                e.preventDefault();
+                this.cxt.lineWidth = this.lineWidth;
+                this.cxt.strokeStyle = 'white';
+                this.handwritingX = [];
+                this.handwritingY = [];
+                var de = document.documentElement;
+                var box = this.canvas.getBoundingClientRect();
+                var top = box.top + window.pageYOffset - de.clientTop;
+                var left = box.left + window.pageXOffset - de.clientLeft;
+                var touch = e.changedTouches[0];
+                touchX = touch.pageX - left;
+                touchY = touch.pageY - top;
+                this.handwritingX.push(touchX);
+                this.handwritingY.push(touchY);
+                this.cxt.beginPath();
+                this.cxt.moveTo(touchX, touchY);
+            };
+
+            handwriting.Canvas.prototype.touchMove = function (e) {
+                e.preventDefault();
+                var touch = e.targetTouches[0];
+                var de = document.documentElement;
+                var box = this.canvas.getBoundingClientRect();
+                var top = box.top + window.pageYOffset - de.clientTop;
+                var left = box.left + window.pageXOffset - de.clientLeft;
+                var x = touch.pageX - left;
+                var y = touch.pageY - top;
+                this.handwritingX.push(x);
+                this.handwritingY.push(y);
+                this.cxt.lineTo(x, y);
+                this.cxt.stroke();
+            };
+
+            handwriting.Canvas.prototype.touchEnd = function (e) {
+                var w = [];
+                w.push(this.handwritingX);
+                w.push(this.handwritingY);
+                w.push([]);
+                this.trace.push(w);
+                if (this.allowUndo) this.step.push(this.canvas.toDataURL());
+                recogniseinject()
+            };
+
+            handwriting.Canvas.prototype.undo = function () {
+                if (!this.allowUndo || this.step.length <= 0) return;
+                else if (this.step.length === 1) {
+                    if (this.allowRedo) {
+                        this.redo_step.push(this.step.pop());
+                        this.redo_trace.push(this.trace.pop());
+                        this.cxt.clearRect(0, 0, this.width, this.height);
+                    }
+                } else {
+                    if (this.allowRedo) {
+                        this.redo_step.push(this.step.pop());
+                        this.redo_trace.push(this.trace.pop());
+                    } else {
+                        this.step.pop();
+                        this.trace.pop();
+                    }
+                    loadFromUrl(this.step.slice(-1)[0], this);
+                }
+            };
+
+            handwriting.Canvas.prototype.redo = function () {
+                if (!this.allowRedo || this.redo_step.length <= 0) return;
+                this.step.push(this.redo_step.pop());
+                this.trace.push(this.redo_trace.pop());
+                loadFromUrl(this.step.slice(-1)[0], this);
+            };
+
+            handwriting.Canvas.prototype.erase = function () {
+                this.cxt.clearRect(0, 0, this.width, this.height);
+                this.step = [];
+                this.redo_step = [];
+                this.redo_trace = [];
+                this.trace = [];
+            };
+
+            function loadFromUrl(url, cvs) {
+                var imageObj = new Image();
+                imageObj.onload = function () {
+                    cvs.cxt.clearRect(0, 0, this.width, this.height);
+                    cvs.cxt.drawImage(imageObj, 0, 0);
+                };
+                imageObj.src = url;
+            }
+
+            handwriting.recognize = function (trace, options, callback) {
+                if (handwriting.Canvas && this instanceof handwriting.Canvas) {
+                    trace = this.trace;
+                    options = this.options;
+                    callback = this.callback;
+                } else if (!options) options = {};
+                var data = JSON.stringify({
+                    "options": "enable_pre_space",
+                    "requests": [{
+                        "writing_guide": {
+                            "writing_area_width": options.width || this.width || undefined,
+                            "writing_area_height": options.height || this.width || undefined
+                        },
+                        "ink": trace,
+                        "language": options.language || "zh_TW"
+                    }]
+                });
+                var xhr = new XMLHttpRequest();
+                xhr.addEventListener("readystatechange", function () {
+                    if (this.readyState === 4) {
+                        switch (this.status) {
+                            case 200:
+                                var response = JSON.parse(this.responseText);
+                                var results;
+                                if (response.length === 1) callback(undefined, new Error(response[0]));
+                                else results = response[1][0][1];
+                                if (!!options.numOfWords) {
+                                    results = results.filter(function (result) {
+                                        return (result.length == options.numOfWords);
+                                    });
+                                }
+                                if (!!options.numOfReturn) {
+                                    results = results.slice(0, options.numOfReturn);
+                                }
+                                handleinject(results, trace)
+                                callback(results, undefined);
+                                break;
+                            case 403:
+                                callback(undefined, new Error("access denied"));
+                                break;
+                            case 503:
+                                callback(undefined, new Error("can't connect to recognition server"));
+                                break;
+                        }
+                    }
+                });
+                xhr.open("POST", "https://www.google.com.tw/inputtools/request?ime=handwriting&app=mobilesearch&cs=1&oe=UTF-8");
+                xhr.setRequestHeader("content-type", "application/json");
+                xhr.send(data);
+            };
+
+            // New function to draw lines based on preset coordinates
+            handwriting.Canvas.prototype.drawLines = function (coords) {
+                // Set the pen color to red
+                this.cxt.strokeStyle = '#ff9500';
+                this.cxt.lineWidth = this.lineWidth;
+
+                // Begin the drawing process
+                this.cxt.beginPath();
+
+                // Start at the first point (x1, y1)
+                this.cxt.moveTo(coords.x[0], coords.y[0]);
+
+                // Loop through the remaining coordinates and draw lines
+                for (let i = 1; i < coords.x.length; i++) {
+                    this.cxt.lineTo(coords.x[i], coords.y[i]);
+                    this.cxt.stroke();
+                }
+
+                // End the drawing path
+                this.cxt.closePath();
+            };
+
+            handwriting.Canvas.prototype.drawNumbers = function (originX, originY, digits) {
+                // Define the number coordinates and decimal point coordinates
+                var numbers = {
+                    0: { x: [0, 50, 50, 0, 0, 50], y: [0, 0, 75, 75, 0, 75] },
+                    1: { x: [10, 25, 25, 50, 0], y: [0, 0, 75, 75, 75] },
+                    2: { x: [0, 0, 50, 50, 0, 50], y: [10, 0, 0, 25, 75, 75] },
+                    3: { x: [0, 0, 50, 25, 50, 0, 0], y: [10, 0, 0, 37, 75, 75, 65] },
+                    4: { x: [50, 0, 25, 25], y: [37, 37, 0, 75] },
+                    5: { x: [50, 0, 0, 40, 50, 50, 40, 0], y: [0, 0, 35, 35, 45, 65, 75, 75] },
+                    6: { x: [50, 0, 0, 50, 50, 0, 50, 0], y: [0, 0, 75, 75, 37, 37, 37, 75] },
+                    7: { x: [0, 50, 10], y: [0, 0, 75] },
+                    8: { x: [10, 0, 0, 50, 50, 40, 10, 0, 0, 50, 50, 40, 10], y: [0, 10, 25, 50, 65, 75, 75, 65, 50, 25, 10, 0, 0] },
+                    9: { x: [50, 10, 0, 0, 10, 50, 50, 50], y: [0, 0, 10, 27, 37, 37, 75, 0] }
+                };
+
+                var decimalPoint = { x: [0, 10, 10, 0, 0], y: [65, 65, 75, 75, 65] };
+
+                // Initialize the spacing counter
+                var spacing = 0;
+
+                // Draw each character in the digits
+                for (var i = 0; i < digits.length; i++) {
+                    var digit = digits[i];
+
+                    if (digit === '.') {
+                        // If the digit is a decimal point, draw it
+                        var adjustedDecimal = {
+                            x: decimalPoint.x.map(x => x + originX + spacing),
+                            y: decimalPoint.y.map(y => y + originY)
+                        };
+                        this.drawLines(adjustedDecimal);
+
+                        // Add only 20 to the spacing for decimal points
+                        spacing += 20;
+                    } else {
+                        // If the digit is a number, draw it
+                        var coords = numbers[digit];
+                        if (coords) {
+                            var adjustedCoords = {
+                                x: coords.x.map(x => x + originX + spacing),
+                                y: coords.y.map(y => y + originY)
+                            };
+                            this.drawLines(adjustedCoords);
+
+                            // Update the spacing counter
+                            spacing += 60; // Adjust spacing between numbers
+                        }
+                    }
+                }
+            };
+
+
+
+
+
+        })(window, document);
+
+
+    </script>
+    <style>
+        body {
+            width: 100vw;
+            height: 100vh;
+            padding: 0;
+            margin: 0;
+            background-color: rgb(31, 31, 31);
+            background-image: radial-gradient(rgb(51, 51, 51) 5px, transparent 0);
+            background-size: 70px 70px;
+            background-position: -19px -19px;
+        }
+
+        canvas {
+            background-color: rgba(255,255,255,0);
+            position: absolute;
+        }
+
+        
+    </style>
+</head>
+
+<body>
+
+    <div id="canvascontainer"></div>
+        <div id="result">Result: <span id='result' /></div>
+    <script>
+
+        let canvasnum = 0
+        var canvas
+
+        generatecanvas()
+
+        function recogniseinject() {
+            canvas.recognize()
+        }
+
+        function handleinject(results, trace) {
+            if (results[0].indexOf('=') >= 0) {
+                console.log('equation detected')
+                let equation = results[0].substring(0, results[0].length - 1)
+                solve(equation, (solution) => {
+                    console.log(solution)
+                    let shortenedsolution = solution.toFixed(5)
+                    console.log(shortenedsolution)
+
+                    let lasttrace = trace[trace.length - 1]
+
+                    let tracexpos = lasttrace[0]
+                    let traceypos = lasttrace[1]
+
+                    let lastxpos = tracexpos[0]
+                    let lastypos = traceypos[0]
+
+                    let usablex = Math.floor(lastxpos)
+                    let usabley = Math.floor(lastypos)
+
+                    let finalx = usablex + 20
+                    let finaly = usabley - 50
+
+                    console.log(finalx, finaly)
+
+                    canvas.drawNumbers(finalx, finaly, String(solution))
+                    // generatecanvas()
+                })
+
+            } else {
+                // console.log('not an equation')
+            }
+        }
+
+        function generatecanvas() {
+            let canvascode = `<canvas id="canvas${canvasnum}" width="${document.body.clientWidth}" height="${document.body.clientHeight}" style="cursor: crosshair;"></canvas>`
+
+            document.getElementById('canvascontainer').innerHTML += canvascode
+            
+            canvas = new handwriting.Canvas(document.getElementById(`canvas${canvasnum}`), 3);
+            canvas.setCallBack(function (data, err) {
+                // console.log(data);
+                if (err) throw err;
+                else document.getElementById("result").innerHTML = data;
+            });
+
+            canvas.setLineWidth(5);
+            
+
+            console.log(document.getElementById(`canvas${canvasnum}`).offsetHeight)
+            //Set options
+            canvas.setOptions({
+                language: "en",
+                numOfReturn: 1
+            });
+
+            canvasnum++
+        }
+
+        function solve(expression, callback) {
+            // Replace 'x' with '*' for multiplication
+            expression = expression.replace(/x/g, '*');
+            expression = expression.replace(/X/g, '*');
+
+            try {
+                // Evaluate the expression using eval()
+                const result = eval(expression);
+                callback(result)
+            } catch (error) {
+                return "Error in expression";
+            }
+        }
+
+    </script>
+</body>
+
+</html>
